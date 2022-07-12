@@ -7,6 +7,14 @@ import os
 import request as req
 import json
 import socket
+import json
+import email
+import ssl
+import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 capture = pyshark.LiveCapture(interface='wlo1',output_file="test.pcap")
 separator = '------------------------------------------------------------------------'
 pcap_file = "test.pcap"
@@ -77,9 +85,31 @@ def sniffer():
    
 def snort(file):
     print(cmd("snort -A console -q -u snort -g snort -c /etc/snort/snort.conf --daq-dir /usr/lib/daq/ --pcap-list " + file))
+
+def email_notif(uemail, pword):
+    subject = "Malicious Packets Detected!"
+    body = "Malicious activity detected:\n{}".format("\n".join(malicious_ip))
+    sender_email = uemail
+    receiver_email = uemail
+    password = pword
+
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = receiver_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    text = message.as_string()
+    context = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        server.login(sender_email, password)
+        server.sendmail(sender_email, receiver_email, text)
+
 def main():
+    uemail = input("Email: ")
+    pword = input("Password: ")
     sniffer()
     snort(pcap_file)
-
+    email_notif(umail, pword)
 if __name__ == '__main__':
     main()

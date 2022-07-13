@@ -5,6 +5,8 @@ import time
 import subprocess as sp
 import os
 import request as req
+import re
+import argparse
 import json
 import socket
 import json
@@ -15,8 +17,9 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
 capture = pyshark.LiveCapture(interface='wlo1',output_file="test.pcap")
-separator = '------------------------------------------------------------------------'
+separator = '-'*72
 pcap_file = "test.pcap"
 malicious_ip = []
 
@@ -38,7 +41,7 @@ def check_ip( ip):
 def cmd(command):
     return sp.run(command.split(" "), capture_output = True, text=True).stdout
 
-
+    
 def sniffer():
     count = 1
     print(cmd("ss -tp"))
@@ -82,9 +85,12 @@ def sniffer():
         except AttributeError as e:
             pass
     print()
+
+
    
 def snort(file):
     print(cmd("snort -A console -q -u snort -g snort -c /etc/snort/snort.conf --daq-dir /usr/lib/daq/ --pcap-list " + file))
+
 
 def email_notif(uemail, pword):
     subject = "Malicious Packets Detected!"
@@ -105,11 +111,43 @@ def email_notif(uemail, pword):
         server.login(sender_email, password)
         server.sendmail(sender_email, receiver_email, text)
 
-def main():
-    uemail = input("Email: ")
-    pword = input("Password: ")
-    sniffer()
+def check_email(email):
+    return True if re.match(r".+@.+\.com",str(email)) else False
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description='Custom IDS Tool',
+    formatter_class=argparse.RawDescriptionHelpFormatter, epilog=textwrap.dedent(
+        '''Example: sudo pyshart-test.py -e user@email.com -p [email password] -c [packet count] -s [packet size]'''))
+    parser.add_argument('-e', '--email', help='adds user email')
+    parser.add_argument('-c', '--count', type=int, default=500, help='specifies ammount of packets to count')
+    parser.add_argument('-s', '--size', type=int, default=200, help='specifies minimum packet size')
+
+    return parser.parse_args()
+
+
+def run( args):        
+    valid_email=check_email(args.email)
+
+    if valid_email:
+        password = getpass.getpass("E-mail password: ")
+    else:
+        password = ""
+        
+    sniffer(args.count,args.size,True,True)
     snort(pcap_file)
-    email_notif(umail, pword)
+
+    if len(malicious_ip) > 0:
+        if valid_email: 
+            mail_notif(args.email, args.password)
+        else:
+            print(INVALID_EMAIL)
+        
+
 if __name__ == '__main__':
-    main()
+    args = get_args()
+    
+    if args.interface:
+        run_interface(args)
+    else:
+        run(args)

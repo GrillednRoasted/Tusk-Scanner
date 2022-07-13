@@ -1,0 +1,5 @@
+pip3 install notify2
+pip3 install scapy
+pip3 install pyshark
+pip3 install snort
+pip3 install pysimplegui

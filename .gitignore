@@ -1,4 +1,4 @@
 *.pcap
-key
-todo
+*.txt
+!requirements.txt
 __pycache__

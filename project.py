@@ -32,30 +32,37 @@ malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
 
 def cmd(command):
+    """ runs a given command and return its output """
     return sp.run(command.split(" "), capture_output = True, text=True).stdout
 
-def check_ip( ip):
+def check_ip(ip):
+    """ runs an IP confidence test on www.abuseipdb.com """
 
-    with open("key") as key:
+    with open("api-key.txt") as key:
         key = key.read().strip()
 
     data = {"maxAgeInDays":90}
     headers = {"Key":key,"Accept":"application/json"}
-
     url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
-    r = req.get( url, data=data, headers=headers)
+    r = req.get(url, data=data, headers=headers)
 
     dic = json.loads(r.content.decode())
+    
+    if not "data" in dic:
+        return None
 
+    msg = f"IP: {ip} malicious factor: {dic['data']['abuseConfidenceScore']}"
     if dic['data']['abuseConfidenceScore'] == 100:
-        malicious_ip.append(f"IP: {ip} malicious factor: {dic['data']['abuseConfidenceScore']}")
+        malicious_ip.append(msg)
 
-    return f"IP: {ip} malicious factor: {dic['data']['abuseConfidenceScore']}"
+    return msg
 
 def reverse_dns(ip):
+    """ tries to get a domain name associated with the ip """
     return cmd(f"dig -x {ip} +short").strip()
 
 def get_processes():
+    """ returns dictionary with ip data and it's process """
     proc = cmd("ss -nap").split("\n")
 
     name_reg = re.compile(r'\"(?P<name>.*)\"\,')
@@ -63,15 +70,15 @@ def get_processes():
     ipv4_reg = re.compile(r'(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\:')
 
     dic = {}
-
+    # searches for ip and process, continues if not found
     for line in proc:
         line = [a for a in line.split(" ") if a != ""]
 
-        if len( line) > 0:
+        if len(line) > 0:
             ip,name = line[-2:]
 
-            ipv6 = ipv6_reg.search( ip)
-            ipv4 = ipv4_reg.search( ip)
+            ipv6 = ipv6_reg.search(ip)
+            ipv4 = ipv4_reg.search(ip)
 
             if ipv6:
                 ip = ipv6.group("ip")
@@ -80,77 +87,83 @@ def get_processes():
             else:
                 continue
             
-            name = name_reg.search( name)
+            name = name_reg.search(name)
             if name:
                 name = name.group("name")
             else:
                 continue
-
             dic[ip] = name
 
     return dic
 
+def get_local_ip():
+    """  connect to google's DNS server in order to get local ip and return it  """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+        connection.connect(("8.8.8.8", 80))
+        return connection.getsockname()[0]
+
 def sniffer(pcount,psize,ipdb,dns):
+    """  captures live packets on the network """
     process_dic = get_processes()
-
-    count = 1
+    hostname = get_local_ip()
+    count = 0
     unique = []
-
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-
-    hostname = s.getsockname()[0]
-    
-    s.close()
-
+    # capture a specified number of packets and iterate through them
     for packet in capture.sniff_continuously(packet_count=pcount):
-        try:
-            if int(packet.length) > psize:
-                localtime = time.asctime(time.localtime(time.time()))
+        if int(packet.length) < psize:
+            continue
 
-                protocol = packet.transport_layer
-                src_addr = packet.ip.src
-                src_port = packet[protocol].srcport
-                dst_addr = packet.ip.dst
-                dst_port = packet[protocol].dstport
+        localtime = time.asctime(time.localtime(time.time()))
 
-                if dst_addr in unique or dst_addr == hostname:
-                    continue
+        if not "ip" in packet:
+            return
+
+        protocol = packet.transport_layer
+        src_addr = packet.ip.src
+        src_port = packet[protocol].srcport
+        dst_addr = packet.ip.dst
+        dst_port = packet[protocol].dstport
+        # makes sure ips reported are unique and aren't the host's ip
+        if dst_addr in unique or dst_addr == hostname:
+            continue
                     
-                unique.append(dst_addr)
+        unique.append(dst_addr)
                 
-                print(f"Packet Number {count}:")
-                print ("%s IP %s:%s <-> %s:%s (%s)" % (localtime, src_addr, src_port, dst_addr, dst_port, protocol),"\n")
-                print(f"Packet Length: {packet.length}")
+        print(f"Packet Number {count}:")
+        print ("%s IP %s:%s <-> %s:%s (%s)" % (localtime, src_addr, src_port, dst_addr, dst_port, protocol),"\n")
+        print(f"Packet Length: {packet.length}")
 
-                if dst_addr in process_dic:
-                    print(f"IP: {dst_addr} is coming from '{process_dic[dst_addr]}'")
+        if dst_addr in process_dic:
+            print(f"IP: {dst_addr} is coming from '{process_dic[dst_addr]}'")
 
-                if dns:
-                    domain = reverse_dns(dst_addr)
-                    if domain != "":
-                        print(f"IP: {dst_addr} domain is: {domain}")
-                    else:
-                        print(f"IP: {dst_addr} has no domain name associated with it.")
-
-                if ipdb:
-                    print(check_ip(dst_addr))
-
-                print(separator)   
-                count += 1
+        if dns:
+            domain = reverse_dns(dst_addr)
+            if domain != "":
+                print(f"IP: {dst_addr} domain is: {domain}")
             else:
-                continue
-        except AttributeError as e:
-            pass
+                print(f"IP: {dst_addr} has no domain name associated with it.")
+            
+        if ipdb:
+            score = check_ip(dst_addr)
+            if score:
+                print( score)
+            else:
+                print( "Failed to get IP confidence score!")
+
+        print(separator)   
+        count += 1
+
     print()
 
 def snort(file):
+    """ runs snort command to detect malicious activity """
     snort_results = cmd("snort -N -A console -q -u snort -g snort -c /etc/snort/snort.conf --daq-dir /usr/lib/daq/ --pcap-list " + file)
     print(snort_results)
     if len(snort_results) > 0:
         malicious_ip.append(snort_results)
 
 def email_notif(uemail, pword):
+    """ sets up email notification using gmail """ 
     subject = "Malicious Packets Detected!"
     body = "Malicious activity detected:\n{}".format("\n".join(malicious_ip))
     sender_email = uemail
@@ -162,7 +175,7 @@ def email_notif(uemail, pword):
     message["To"] = receiver_email
     message["Subject"] = subject
     message.attach(MIMEText(body, "plain"))
-
+    # uses email address and google app password to login and send an email
     text = message.as_string()
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
@@ -170,18 +183,23 @@ def email_notif(uemail, pword):
         server.sendmail(sender_email, receiver_email, text)
 
 def check_email(email):
+    """ regex for validating email format """
     return True if re.match(r".+@.+\.com",str(email)) else False
 
 def notif():
+    """ runs notification bash script """
     sp.run(["sh","notify.sh","-u","critical","Alert!","Malicious IP Detected! Check Email!"])
     
-def toint( value):
+def toint(value):
+    """ converts str to int """
     value = str(value)
     if value.isdigit():
         return int(value)
     return 0
-    
+
+
 def get_args():
+    """ sets arguments and argument descriptions """
     parser = argparse.ArgumentParser(description='Custom IDS Tool',
     formatter_class=argparse.RawDescriptionHelpFormatter, epilog=textwrap.dedent(
         '''Example: sudo pyshart-test.py -e user@email.com -p [email password] -c [packet count] -s [packet size] -i'''))
@@ -192,28 +210,30 @@ def get_args():
 
     return parser.parse_args()
 
-def run_interface( args):
+
+def run_interface(args):
+    """ launches user interface """
     ui = Interface(args.email, args.count, args.size)
 
     while ui.open:
         event, values = ui.update()
-
+        # if scan button clicked, run sniffer with specified parameters
         if event == "scan":
-            values['count'] = toint( values['count'])
-            values['size'] = toint( values['size'])
+            values['count'] = toint(values['count'])
+            values['size'] = toint(values['size'])
                
             print("Scanning...")
             ui.progress(25)
 
             sniffer(values['count'],values['size'],values['ipdb'],values['dns'])
             ui.progress(50)
-
+            # runs snort if selected
             if values['snort']:
                 snort(pcap_file)
 
             valid_email = check_email(values['email']) 
             ui.progress(75)
-
+            # sends email for malicious ips if email credentials are valid
             if len(malicious_ip) > 0:
                 if valid_email:
                     email_notif(values['email'],values['passw'])
@@ -222,10 +242,12 @@ def run_interface( args):
                     
                 notif()
             ui.progress(100) 
- 
-def run( args):        
-    valid_email=check_email(args.email)
 
+def run(args):        
+    """ run the application without a user interface """
+    valid_email = check_email(args.email)
+
+    # ask for a password if email valid
     if valid_email:
         password = getpass.getpass("E-mail password: ")
     else:
@@ -233,7 +255,7 @@ def run( args):
         
     sniffer(args.count,args.size,True,True)
     snort(pcap_file)
-
+    # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:
         if valid_email: 
             mail_notif(args.email, args.password)
@@ -241,11 +263,14 @@ def run( args):
             print(INVALID_EMAIL)
         notif()
     
-if __name__ == '__main__':
+
+def main():
     args = get_args()
 
     if args.interface:
-        run_interface( args)
+        run_interface(args)
     else:
-        run( args)
+        run(args)
 
+if __name__ == '__main__':
+    main()

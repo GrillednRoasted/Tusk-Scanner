@@ -22,7 +22,7 @@ class Interface:
 
         main_layout = [
             [
-                sg.Output( size=(95,16), key="output")],
+                sg.Multiline( size=(95,16), key="output", autoscroll=True,disabled=True,reroute_stdout=True,auto_refresh=True)],
                 [
                     sg.Frame("E-mail settings:", email_layout, size=(200,110)),
                     sg.Frame("Packets settings:", packets_layout, size=(180,110)),
@@ -30,7 +30,7 @@ class Interface:
                     sg.Button( "Start scan", size=(4,2),key='scan'),
                 ],
             [
-                sg.ProgressBar(100, orientation='h', s=(68,20), k='pbar')]
+                sg.ProgressBar(100, orientation='h', s=(68,20),k='pbar')]
             ]
 
         title = 'malicious traffic scanner'
@@ -50,7 +50,6 @@ class Interface:
         if event == sg.WIN_CLOSED:
             self.open = False 
             self.window.close()
-            return
 
         return event, values 
 

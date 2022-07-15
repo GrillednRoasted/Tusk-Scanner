@@ -17,20 +17,40 @@ class Interface:
         check_layout = [
                 [sg.Checkbox('DNS check',True,key="dns")],
                 [sg.Checkbox('snort',True,key="snort")],
-                [sg.Checkbox('ip database',True,key="ipdb")]
+                [sg.Checkbox('ip database',True,key="ipdb")],
+                [sg.Checkbox('auto block',True,key="autoblock")]
             ]
-
+        
+        block_layout = [
+            [
+            sg.Text("IP:"),
+            sg.Input(size=(20,20),key="blockip"),
+            sg.Button("Block IP",expand_x=True,expand_y=True,key="block"),
+            sg.Button("Unblock IP",expand_x=True,expand_y=True,key="unblock"),
+            ]
+        ]
+        
+        column1_layout = [
+            [
+            sg.Frame("E-mail settings:", email_layout,expand_y=True,expand_x=True),
+            sg.Frame("Packets settings:", packets_layout,expand_y=True,expand_x=True),
+            ],
+            [sg.Frame("IP blocking:",block_layout,expand_y=True,expand_x=True)]
+        ]
+        
+        buttons_layout = [
+            [sg.Button( "Start scan", expand_x=True,expand_y=True,key='scan')],
+            [sg.Button( "Quit", expand_x=True,expand_y=True,key='quit')],
+        ]
+        
         main_layout = [
-            [
-                sg.Multiline( size=(95,16), key="output", autoscroll=True,disabled=True,reroute_stdout=True,auto_refresh=True)],
+                [sg.Multiline( expand_x=True,size=(0,20), key="output", autoscroll=True,disabled=True,reroute_stdout=True,auto_refresh=True)],
                 [
-                    sg.Frame("E-mail settings:", email_layout, size=(200,110)),
-                    sg.Frame("Packets settings:", packets_layout, size=(180,110)),
-                    sg.Frame("Actions", check_layout, size=(180,110)),
-                    sg.Button( "Start scan", size=(4,2),key='scan'),
+                    sg.Column(column1_layout),
+                    sg.Frame("Actions", check_layout,expand_y=True,expand_x=True),
+                    sg.Column(buttons_layout,expand_x=True,expand_y=True)
                 ],
-            [
-                sg.ProgressBar(100, orientation='h', s=(68,20),k='pbar')]
+                [sg.ProgressBar(100, orientation='h', expand_x=True,bar_color=("green","grey"),k='pbar')]
             ]
 
         title = 'malicious traffic scanner'
@@ -47,13 +67,17 @@ class Interface:
     def update( self):
         event, values = self.window.read(timeout=100)
         
-        if event == sg.WIN_CLOSED:
+        if event == sg.WIN_CLOSED or event == "quit":
             self.open = False 
             self.window.close()
 
         return event, values 
 
-if __name__ == "__main__":
+
+def main():
     ui = Interface()
     while ui.open:
         ui.update()
+
+if __name__ == "__main__":
+    main()

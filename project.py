@@ -1,15 +1,14 @@
 #!/bin/env python3
-import pyshark
+from pyshark import LiveCapture
 import time
 import subprocess as sp
 import os
 import requests as req
 import json
-import random
 import argparse
 import textwrap
-import smtplib
 import email
+import smtplib
 import ssl
 import socket
 import re
@@ -20,13 +19,8 @@ from email.mime.text import MIMEText
 import notify2
 from interface import Interface
 import getpass
-import sys
-sys.stderr = None
-from scapy.all import *
-sys.stderr = sys.__stderr__
 
 pcap_file = "test.pcap"
-capture = pyshark.LiveCapture(interface='wlo1', output_file=pcap_file)
 separator = '-'*72+'\n'
 malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
@@ -35,7 +29,7 @@ def cmd(command):
     """ runs a given command and return its output """
     return sp.run(command.split(" "), capture_output = True, text=True).stdout
 
-def check_ip(ip):
+def check_ip(src,dst,auto_block):
     """ runs an IP confidence test on www.abuseipdb.com """
 
     with open("api-key.txt") as key:
@@ -43,7 +37,7 @@ def check_ip(ip):
 
     data = {"maxAgeInDays":90}
     headers = {"Key":key,"Accept":"application/json"}
-    url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
+    url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={dst}"
     r = req.get(url, data=data, headers=headers)
 
     dic = json.loads(r.content.decode())
@@ -51,10 +45,13 @@ def check_ip(ip):
     if not "data" in dic:
         return None
 
-    msg = f"IP: {ip} malicious factor: {dic['data']['abuseConfidenceScore']}"
+    msg = f"IP: {dst} malicious factor: {dic['data']['abuseConfidenceScore']}"
     if dic['data']['abuseConfidenceScore'] == 100:
         malicious_ip.append(msg)
-
+        if auto_block:
+            local = get_local_ip()
+            if src == local:
+                block_ip(dst,True)
     return msg
 
 def reverse_dns(ip):
@@ -102,11 +99,12 @@ def get_local_ip():
         connection.connect(("8.8.8.8", 80))
         return connection.getsockname()[0]
 
-def sniffer(pcount,psize,ipdb,dns):
+def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
     """  captures live packets on the network """
+    capture = LiveCapture(interface='wlo1', output_file=pcap_file)
     process_dic = get_processes()
     hostname = get_local_ip()
-    count = 0
+    count = 1
     unique = []
     # capture a specified number of packets and iterate through them
     for packet in capture.sniff_continuously(packet_count=pcount):
@@ -136,15 +134,15 @@ def sniffer(pcount,psize,ipdb,dns):
         if dst_addr in process_dic:
             print(f"IP: {dst_addr} is coming from '{process_dic[dst_addr]}'")
 
-        if dns:
+        if use_dns:
             domain = reverse_dns(dst_addr)
             if domain != "":
                 print(f"IP: {dst_addr} domain is: {domain}")
             else:
                 print(f"IP: {dst_addr} has no domain name associated with it.")
             
-        if ipdb:
-            score = check_ip(dst_addr)
+        if use_ipdb:
+            score = check_ip(src_addr,dst_addr,auto_block)
             if score:
                 print( score)
             else:
@@ -161,6 +159,11 @@ def snort(file):
     print(snort_results)
     if len(snort_results) > 0:
         malicious_ip.append(snort_results)
+
+def block_ip(ip,block):
+    """ blocks traffic from ip """
+    cmd(f"iptables -{'A' if block else 'D'} INPUT -s {ip} -j DROP")
+    print(f"{'Blocking' if block else 'Unblocking'} traffic from {ip}!")
 
 def email_notif(uemail, pword):
     """ sets up email notification using gmail """ 
@@ -218,14 +221,18 @@ def run_interface(args):
     while ui.open:
         event, values = ui.update()
         # if scan button clicked, run sniffer with specified parameters
-        if event == "scan":
+        if event == "block":
+            block_ip(values['blockip'],True)
+        elif event == "unblock":
+            block_ip(values['blockip'],False)
+        elif event == "scan":
             values['count'] = toint(values['count'])
             values['size'] = toint(values['size'])
                
             print("Scanning...")
             ui.progress(25)
 
-            sniffer(values['count'],values['size'],values['ipdb'],values['dns'])
+            sniffer(values['count'],values['size'],values['ipdb'],values['dns'],values['autoblock'])
             ui.progress(50)
             # runs snort if selected
             if values['snort']:
@@ -253,7 +260,7 @@ def run(args):
     else:
         password = ""
         
-    sniffer(args.count,args.size,True,True)
+    sniffer(args.count,args.size,True,True,False)
     snort(pcap_file)
     # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:

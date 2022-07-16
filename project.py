@@ -22,9 +22,10 @@ import getpass
 from interface import Interface
 
 separator = '-'*72+'\n'
+global malicious_ip
 malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
-pcap_file = "test.pcap"
+pcap_file = "/tmp/tusk.pcap"
 
 def topath(path):
     return f"{os.path.dirname(__file__)}/{path}"
@@ -36,7 +37,7 @@ def cmd(command):
 def check_ip(src,dst,auto_block):
     """ runs an IP confidence test on www.abuseipdb.com """
 
-    with open("api-key.txt") as key:
+    with open(topath("api-key.txt")) as key:
         key = key.read().strip()
 
     data = {"maxAgeInDays":90}
@@ -126,7 +127,7 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
             dst_addr = packet.ip.dst
         elif "ipv6" in packet:
             src_addr = packet.ipv6.src
-            src_addr = packet.ipv6.src
+            dst_addr = packet.ipv6.dst
 
         if protocol:
             src_port = packet[protocol].srcport
@@ -280,7 +281,7 @@ def run(args):
     else:
         password = ""
         
-    sniffer(args.count,args.size,True,True,False)
+    sniffer(args.count,args.size,True,True,True)
     snort(pcap_file)
     # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:
@@ -291,14 +292,18 @@ def run(args):
         notif()
 
 def run_daemon(args):
+    global malicious_ip
     stdout = sys.stdout
 
+    cmd("rm /tmp/tusk.log")
+
     while True:
-        with open("daemon.log","a") as log:
+        malicious_ip = []
+        with open("/tmp/tusk.log","a") as log:
             sys.stdout = log
             run(args)
         sys.stdout = stdout
-        time.sleep(10)
+        time.sleep(5)
 
     sys.stdout = stdout
 

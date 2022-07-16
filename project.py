@@ -1,5 +1,4 @@
 #!/bin/env python3
-from pyshark import LiveCapture
 import time
 import subprocess as sp
 import os
@@ -8,6 +7,7 @@ import json
 import argparse
 import textwrap
 import email
+import sys
 import smtplib
 import ssl
 import socket
@@ -17,13 +17,18 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import notify2
-from interface import Interface
 import getpass
+from interface import Interface
+from pyshark import LiveCapture
 
-pcap_file = "test.pcap"
 separator = '-'*72+'\n'
 malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
+
+def topath(path):
+    return f"{os.path.dirname(__file__)}/{path}"
+
+pcap_file = os.path.abspath("test.pcap")
 
 def cmd(command):
     """ runs a given command and return its output """
@@ -32,7 +37,7 @@ def cmd(command):
 def check_ip(src,dst,auto_block):
     """ runs an IP confidence test on www.abuseipdb.com """
 
-    with open("api-key.txt") as key:
+    with open(topath("api-key.txt")) as key:
         key = key.read().strip()
 
     data = {"maxAgeInDays":90}
@@ -52,7 +57,7 @@ def check_ip(src,dst,auto_block):
             local = get_local_ip()
             if src == local:
                 block_ip(dst,True)
-    return msg
+    return dic['data']['abuseConfidenceScore']
 
 def reverse_dns(ip):
     """ tries to get a domain name associated with the ip """
@@ -103,30 +108,42 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
     """  captures live packets on the network """
     capture = LiveCapture(interface='wlo1', output_file=pcap_file)
     process_dic = get_processes()
+    capture.set_debug()
     hostname = get_local_ip()
     count = 1
-    unique = []
+    scores = {}
     # capture a specified number of packets and iterate through them
     for packet in capture.sniff_continuously(packet_count=pcount):
+        print("packet..")
         if int(packet.length) < psize:
             continue
 
-        localtime = time.asctime(time.localtime(time.time()))
-
-        if not "ip" in packet:
-            return
-
         protocol = packet.transport_layer
-        src_addr = packet.ip.src
-        src_port = packet[protocol].srcport
-        dst_addr = packet.ip.dst
-        dst_port = packet[protocol].dstport
+        
+        if "arp" in packet:
+            src_addr = packet.arp.src_proto_ipv4
+            dst_addr = packet.arp.src_proto_ipv4
+        elif "ip" in packet:
+            src_addr = packet.ip.src
+            dst_addr = packet.ip.dst
+        elif "ipv6" in packet:
+            src_addr = packet.ipv6.src
+            src_addr = packet.ipv6.src
+
+        if protocol:
+            src_port = packet[protocol].srcport
+            dst_port = packet[protocol].dstport
+        else:
+            src_port = ""
+            dst_port = ""
+
+        print("checking ip")
         # makes sure ips reported are unique and aren't the host's ip
-        if dst_addr in unique or dst_addr == hostname:
-            continue
-                    
-        unique.append(dst_addr)
-                
+        if dst_addr not in scores:
+            scores[dst_addr] = check_ip(src_addr,dst_addr,auto_block)
+        print("checked")
+
+        localtime = time.asctime(time.localtime(time.time()))
         print(f"Packet Number {count}:")
         print ("%s IP %s:%s <-> %s:%s (%s)" % (localtime, src_addr, src_port, dst_addr, dst_port, protocol),"\n")
         print(f"Packet Length: {packet.length}")
@@ -142,16 +159,22 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
                 print(f"IP: {dst_addr} has no domain name associated with it.")
             
         if use_ipdb:
-            score = check_ip(src_addr,dst_addr,auto_block)
-            if score:
-                print( score)
+            score = scores[dst_addr]
+            if score != None:
+                print(f"Confidence score: {score}")
             else:
-                print( "Failed to get IP confidence score!")
+                print("Failed to get IP confidence score!")
+
+        if scores[dst_addr] == 100:
+            print(f"Blocking IP {dst_addr}")
 
         print(separator)   
         count += 1
-
     print()
+    print("List of blocked IPs:")
+    for ip in scores:
+        if scores[ip] == 100:
+            print(f"    {ip}")
 
 def snort(file):
     """ runs snort command to detect malicious activity """
@@ -163,7 +186,7 @@ def snort(file):
 def block_ip(ip,block):
     """ blocks traffic from ip """
     cmd(f"iptables -{'A' if block else 'D'} INPUT -s {ip} -j DROP")
-    print(f"{'Blocking' if block else 'Unblocking'} traffic from {ip}!")
+    #print(f"{'Blocking' if block else 'Unblocking'} traffic from {ip}!")
 
 def email_notif(uemail, pword):
     """ sets up email notification using gmail """ 
@@ -200,19 +223,18 @@ def toint(value):
         return int(value)
     return 0
 
-
 def get_args():
     """ sets arguments and argument descriptions """
     parser = argparse.ArgumentParser(description='Custom IDS Tool',
     formatter_class=argparse.RawDescriptionHelpFormatter, epilog=textwrap.dedent(
         '''Example: sudo pyshart-test.py -e user@email.com -p [email password] -c [packet count] -s [packet size] -i'''))
     parser.add_argument('-e', '--email', help='adds user email')
-    parser.add_argument('-c', '--count', type=int, default=500, help='specifies ammount of packets to count')
-    parser.add_argument('-s', '--size', type=int, default=200, help='specifies minimum packet size')
+    parser.add_argument('-c', '--count', type=int, default=200, help='specifies ammount of packets to count')
+    parser.add_argument('-s', '--size', type=int, default=10, help='specifies minimum packet size')
     parser.add_argument('-i', '--interface', help='opens the user interface', action="store_true")
+    parser.add_argument('-d', '--daemon', help='runs as a daemon', action="store_true")
 
     return parser.parse_args()
-
 
 def run_interface(args):
     """ launches user interface """
@@ -223,8 +245,10 @@ def run_interface(args):
         # if scan button clicked, run sniffer with specified parameters
         if event == "block":
             block_ip(values['blockip'],True)
+            print(f"Blocked IP {values['blockip']}")
         elif event == "unblock":
             block_ip(values['blockip'],False)
+            print(f"Unblocked IP {values['blockip']}")
         elif event == "scan":
             values['count'] = toint(values['count'])
             values['size'] = toint(values['size'])
@@ -260,7 +284,9 @@ def run(args):
     else:
         password = ""
         
+    print("sniffing")
     sniffer(args.count,args.size,True,True,False)
+    print("end sniffing")
     snort(pcap_file)
     # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:
@@ -269,13 +295,26 @@ def run(args):
         else:
             print(INVALID_EMAIL)
         notif()
-    
+
+def run_daemon(args):
+    stdout = sys.stdout
+
+    while True:
+        with open(topath("/daemon.log"),"a") as log:
+            sys.stdout = log
+            run(args)
+        sys.stdout = stdout
+        time.sleep(10)
+
+    sys.stdout = stdout
 
 def main():
     args = get_args()
 
     if args.interface:
         run_interface(args)
+    elif args.daemon:
+        run_daemon(args)
     else:
         run(args)
 

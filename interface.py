@@ -61,9 +61,6 @@ class Interface:
         self.window['pbar'].update(value)
         self.update()
 
-    def error(msg):
-        sg.popup_error(msg)
-
     def update( self):
         event, values = self.window.read(timeout=100)
         
@@ -72,7 +69,6 @@ class Interface:
             self.window.close()
 
         return event, values 
-
 
 def main():
     ui = Interface()

@@ -1,4 +1,5 @@
 #!/bin/env python3
+from pyshark import LiveCapture
 import time
 import subprocess as sp
 import os
@@ -19,16 +20,14 @@ from email.mime.text import MIMEText
 import notify2
 import getpass
 from interface import Interface
-from pyshark import LiveCapture
 
 separator = '-'*72+'\n'
 malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
+pcap_file = "test.pcap"
 
 def topath(path):
     return f"{os.path.dirname(__file__)}/{path}"
-
-pcap_file = os.path.abspath("test.pcap")
 
 def cmd(command):
     """ runs a given command and return its output """
@@ -37,7 +36,7 @@ def cmd(command):
 def check_ip(src,dst,auto_block):
     """ runs an IP confidence test on www.abuseipdb.com """
 
-    with open(topath("api-key.txt")) as key:
+    with open("api-key.txt") as key:
         key = key.read().strip()
 
     data = {"maxAgeInDays":90}
@@ -108,13 +107,12 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
     """  captures live packets on the network """
     capture = LiveCapture(interface='wlo1', output_file=pcap_file)
     process_dic = get_processes()
-    capture.set_debug()
+    #capture.set_debug()
     hostname = get_local_ip()
     count = 1
     scores = {}
     # capture a specified number of packets and iterate through them
     for packet in capture.sniff_continuously(packet_count=pcount):
-        print("packet..")
         if int(packet.length) < psize:
             continue
 
@@ -137,11 +135,9 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
             src_port = ""
             dst_port = ""
 
-        print("checking ip")
         # makes sure ips reported are unique and aren't the host's ip
         if dst_addr not in scores:
             scores[dst_addr] = check_ip(src_addr,dst_addr,auto_block)
-        print("checked")
 
         localtime = time.asctime(time.localtime(time.time()))
         print(f"Packet Number {count}:")
@@ -284,9 +280,7 @@ def run(args):
     else:
         password = ""
         
-    print("sniffing")
     sniffer(args.count,args.size,True,True,False)
-    print("end sniffing")
     snort(pcap_file)
     # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:
@@ -300,7 +294,7 @@ def run_daemon(args):
     stdout = sys.stdout
 
     while True:
-        with open(topath("/daemon.log"),"a") as log:
+        with open("daemon.log","a") as log:
             sys.stdout = log
             run(args)
         sys.stdout = stdout

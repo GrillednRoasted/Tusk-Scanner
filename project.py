@@ -24,7 +24,6 @@ import ipaddress
 separator = '-'*72+'\n'
 global malicious_ip
 malicious_ip = []
-INVALID_EMAIL = "Invalid e-mail!"
 pcap_file = "/tmp/tusk.pcap"
 unique_file = "/tmp/tusk_unique"
 
@@ -255,7 +254,7 @@ def email_notif(uemail, pword):
     message.attach(MIMEText(body, "plain"))
     # uses email address and google app password to login and send an email
     text = message.as_string()
-    context = ssl.create_default_context()
+    context = ssl.create_default_context()    
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
         server.login(sender_email, password)
         server.sendmail(sender_email, receiver_email, text)
@@ -264,9 +263,12 @@ def check_email(email):
     """ regex for validating email format """
     return True if re.match(r".+@.+\.com",str(email)) else False
 
-def notif():
+def notif(send_email):
+    msg = "Malicious IP Detected!"
+    if send_email:
+        msg += " Check email!"
     """ runs notification bash script """
-    sp.run(["sh","notify.sh","-u","critical","Alert!","Malicious IP Detected! Check Email!"])
+    sp.run(["sh","notify.sh","-u","critical","Alert!",msg])
     
 def toint(value):
     """ converts str to int """
@@ -318,37 +320,24 @@ def run_interface(args):
             if values['snort']:
                 snort(pcap_file)
 
-            valid_email = check_email(values['email']) 
             ui.progress(75)
             # sends email for malicious ips if email credentials are valid
             if len(malicious_ip) > 0:
-                if valid_email:
-                    email_notif(values['email'],values['passw'])
-                else:
-                    print(INVALID_EMAIL)
-                    
-                notif()
+                if args.valid_email:
+                    email_notif(values['email'],values['passw'])                    
+                notif(args.valid_email)
             ui.progress(100) 
 
 def run(args):        
     """ run the application without a user interface """
-    valid_email = check_email(args.email)
-
-    # ask for a password if email valid
-    if valid_email:
-        password = getpass.getpass("E-mail password: ")
-    else:
-        password = ""
         
     sniffer(args.count,args.size,True,True,True)
     snort(pcap_file)
     # send email alerting of malicious ips if email credentials valid
     if len(malicious_ip) > 0:
-        if valid_email: 
-            mail_notif(args.email, args.password)
-        else:
-            print(INVALID_EMAIL)
-        notif()
+        if args.valid_email: 
+            email_notif(args.email, args.password)
+        notif(args.valid_email)
 
 def run_daemon(args):
     global malicious_ip
@@ -366,8 +355,32 @@ def run_daemon(args):
 
     sys.stdout = stdout
 
+
+def email_login(email,password):
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+            server.login(email, password)
+        return True
+    except smtplib.SMTPAuthenticationError as e:
+        return False 
+
 def main():
     args = get_args()
+
+    valid_email = check_email(args.email)
+
+    # ask for a password if email valid
+    if valid_email:
+        args.password = getpass.getpass("E-mail password: ")
+        valid_email = email_login(args.email,args.password)
+        if not valid_email:
+            print("Wrong email or password!")
+    else:
+        print("Invalid email!")
+        args.password = ""
+
+    args.valid_email = valid_email
 
     if args.interface:
         run_interface(args)

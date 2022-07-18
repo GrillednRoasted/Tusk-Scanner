@@ -1,5 +1,4 @@
 #!/bin/env python3
-from pyshark import LiveCapture
 import time
 import subprocess as sp
 import os
@@ -13,19 +12,21 @@ import smtplib
 import ssl
 import socket
 import re
+import getpass
+from pyshark import LiveCapture
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import notify2
-import getpass
 from interface import Interface
+import ipaddress
 
 separator = '-'*72+'\n'
 global malicious_ip
 malicious_ip = []
 INVALID_EMAIL = "Invalid e-mail!"
 pcap_file = "/tmp/tusk.pcap"
+unique_file = "/tmp/tusk_unique"
 
 def topath(path):
     return f"{os.path.dirname(__file__)}/{path}"
@@ -37,7 +38,7 @@ def cmd(command):
 def check_ip(src,dst,auto_block):
     """ runs an IP confidence test on www.abuseipdb.com """
 
-    with open(topath("api-key.txt")) as key:
+    with open("api-key.txt") as key:
         key = key.read().strip()
 
     data = {"maxAgeInDays":90}
@@ -54,9 +55,8 @@ def check_ip(src,dst,auto_block):
     if dic['data']['abuseConfidenceScore'] == 100:
         malicious_ip.append(msg)
         if auto_block:
-            local = get_local_ip()
-            if src == local:
-                block_ip(dst,True)
+            block_ip(src,dst,True)
+                
     return dic['data']['abuseConfidenceScore']
 
 def reverse_dns(ip):
@@ -104,30 +104,58 @@ def get_local_ip():
         connection.connect(("8.8.8.8", 80))
         return connection.getsockname()[0]
 
+def load_unique_ips():
+    if not os.path.exists(unique_file):
+        open(unique_file,"w").close()
+        return []
+
+    with open(unique_file) as file:
+        return file.read().split("\n")
+
+def save_to_uniques(uniques):
+    with open(unique_file,"w") as file:
+        file.write("\n".join(uniques))
+
+def clear_pcap():
+    if os.path.exists(pcap_file):
+        cmd(f"rm {pcap_file}")
+
+def valid_ip(ip):
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
+
 def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
     """  captures live packets on the network """
+    clear_pcap()
     capture = LiveCapture(interface='wlo1', output_file=pcap_file)
     process_dic = get_processes()
     #capture.set_debug()
     hostname = get_local_ip()
     count = 1
     scores = {}
+    uniques = load_unique_ips()
     # capture a specified number of packets and iterate through them
     for packet in capture.sniff_continuously(packet_count=pcount):
         if int(packet.length) < psize:
             continue
 
         protocol = packet.transport_layer
-        
+
         if "arp" in packet:
             src_addr = packet.arp.src_proto_ipv4
             dst_addr = packet.arp.src_proto_ipv4
+            ptype = "arp"
         elif "ip" in packet:
             src_addr = packet.ip.src
             dst_addr = packet.ip.dst
+            ptype = "ipv4"
         elif "ipv6" in packet:
             src_addr = packet.ipv6.src
             dst_addr = packet.ipv6.dst
+            ptype = "ipv6"
 
         if protocol:
             src_port = packet[protocol].srcport
@@ -136,17 +164,32 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
             src_port = ""
             dst_port = ""
 
-        # makes sure ips reported are unique and aren't the host's ip
-        if dst_addr not in scores:
-            scores[dst_addr] = check_ip(src_addr,dst_addr,auto_block)
+        if dst_addr in process_dic:
+            process = process_dic[dst_addr]
+        else:
+            process = "?"
+
+        #checks if packet is unique
+        packet_str = ",".join([dst_addr,process,ptype])
+
+        skip = False
+        for unique in uniques:
+            if unique.startswith(packet_str):
+                score = unique.split(",")[-1]
+                if score == 100:
+                    block_ip(src_addr,dst_addr,True)
+                skip = True
+                break
+
+        if skip:
+            continue 
 
         localtime = time.asctime(time.localtime(time.time()))
         print(f"Packet Number {count}:")
         print ("%s IP %s:%s <-> %s:%s (%s)" % (localtime, src_addr, src_port, dst_addr, dst_port, protocol),"\n")
         print(f"Packet Length: {packet.length}")
 
-        if dst_addr in process_dic:
-            print(f"IP: {dst_addr} is coming from '{process_dic[dst_addr]}'")
+        print(f"IP: {dst_addr} is coming from '{process}'")
 
         if use_dns:
             domain = reverse_dns(dst_addr)
@@ -155,22 +198,31 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
             else:
                 print(f"IP: {dst_addr} has no domain name associated with it.")
             
-        if use_ipdb:
+        score = 0
+        if use_ipdb:        
+            if dst_addr not in scores:
+                scores[dst_addr] = check_ip(src_addr,dst_addr,auto_block)
             score = scores[dst_addr]
             if score != None:
                 print(f"Confidence score: {score}")
             else:
                 print("Failed to get IP confidence score!")
+                score = 0
+
+        uniques.append(f"{packet_str},{score}")
 
         if scores[dst_addr] == 100:
             print(f"Blocking IP {dst_addr}")
 
         print(separator)   
         count += 1
-    print()
-    print("List of blocked IPs:")
-    for ip in scores:
-        if scores[ip] == 100:
+
+    save_to_uniques(uniques)
+    
+    blocked = [a for a in scores if scores[a] == 100]
+    if len(blocked) > 0:
+        print("List of blocked IPs:")
+        for ip in blocked:
             print(f"    {ip}")
 
 def snort(file):
@@ -180,8 +232,11 @@ def snort(file):
     if len(snort_results) > 0:
         malicious_ip.append(snort_results)
 
-def block_ip(ip,block):
+def block_ip(src,ip,block):
     """ blocks traffic from ip """
+    local = get_local_ip()
+    if block and src != local:
+        return
     cmd(f"iptables -{'A' if block else 'D'} INPUT -s {ip} -j DROP")
     #print(f"{'Blocking' if block else 'Unblocking'} traffic from {ip}!")
 
@@ -239,13 +294,17 @@ def run_interface(args):
 
     while ui.open:
         event, values = ui.update()
+        
+        block = event == "block"
+        if block or event == "unblock":            
+            local = get_local_ip()
+            if valid_ip(values['blockip']):
+                block_ip(local,values['blockip'],block)
+                print(f"{'Blocked' if block else 'Unblocked'} IP {values['blockip']}")
+            else:
+                print("Invalid IP!")
+
         # if scan button clicked, run sniffer with specified parameters
-        if event == "block":
-            block_ip(values['blockip'],True)
-            print(f"Blocked IP {values['blockip']}")
-        elif event == "unblock":
-            block_ip(values['blockip'],False)
-            print(f"Unblocked IP {values['blockip']}")
         elif event == "scan":
             values['count'] = toint(values['count'])
             values['size'] = toint(values['size'])

@@ -104,6 +104,7 @@ def get_local_ip():
         return connection.getsockname()[0]
 
 def load_unique_ips():
+    """ Loads unique packet file to be read """
     if not os.path.exists(unique_file):
         open(unique_file,"w").close()
         return []
@@ -112,14 +113,17 @@ def load_unique_ips():
         return file.read().split("\n")
 
 def save_to_uniques(uniques):
+    """ Saves unique packets to a file """
     with open(unique_file,"w") as file:
         file.write("\n".join(uniques))
 
 def clear_pcap():
+    """ Clears the tusk.pcap file """
     if os.path.exists(pcap_file):
         cmd(f"rm {pcap_file}")
 
 def valid_ip(ip):
+    """ Checks if ip is valid """
     try:
         ipaddress.ip_address(ip)
         return True
@@ -142,7 +146,7 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
             continue
 
         protocol = packet.transport_layer
-
+        #breaks apart captured packets for arp, ipv4, ipv6, and unknown types
         if "arp" in packet:
             src_addr = packet.arp.src_proto_ipv4
             dst_addr = packet.arp.src_proto_ipv4
@@ -182,14 +186,14 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
 
         if skip:
             continue 
-
+        #formats the resulting output 
         localtime = time.asctime(time.localtime(time.time()))
         print(f"Packet Number {count}:")
         print ("%s IP %s:%s <-> %s:%s (%s)" % (localtime, src_addr, src_port, dst_addr, dst_port, protocol),"\n")
         print(f"Packet Length: {packet.length}")
 
         print(f"IP: {dst_addr} is coming from '{process}'")
-
+        #checks dns for the domain for the ip 
         if use_dns:
             domain = reverse_dns(dst_addr)
             if domain != "":
@@ -217,7 +221,7 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
         count += 1
 
     save_to_uniques(uniques)
-    
+    #lists blocked ips
     blocked = [a for a in scores if scores[a] == 100]
     if len(blocked) > 0:
         print("List of blocked IPs:")
@@ -264,6 +268,7 @@ def check_email(email):
     return True if re.match(r".+@.+\.com",str(email)) else False
 
 def notif(send_email):
+    """ Changes notification if email and password submitted successfully """
     msg = "Malicious IP Detected!"
     if send_email:
         msg += " Check email!"
@@ -340,13 +345,16 @@ def run(args):
         notif(args.valid_email)
 
 def run_daemon(args):
+    """ Runs application as a service """
     global malicious_ip
     stdout = sys.stdout
-
+    
+    #removes tusk.log everytime the application restarts
     cmd("rm /tmp/tusk.log")
 
     while True:
         malicious_ip = []
+        #saves output to tusk.log
         with open("/tmp/tusk.log","a") as log:
             sys.stdout = log
             run(args)
@@ -357,6 +365,7 @@ def run_daemon(args):
 
 
 def email_login(email,password):
+    """ Tests email password at the start when inputted """
     try:
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:

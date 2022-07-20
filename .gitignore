@@ -3,3 +3,4 @@
 !requirements.txt
 __pycache__
 daemon.log
+.hypothesis/

@@ -13,13 +13,13 @@ import ssl
 import socket
 import re
 import getpass
+import ipaddress
 from pyshark import LiveCapture
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from interface import Interface
-import ipaddress
 
 separator = '-'*72+'\n'
 global malicious_ip
@@ -51,7 +51,7 @@ def check_ip(src,dst,auto_block):
         return None
 
     msg = f"IP: {dst} malicious factor: {dic['data']['abuseConfidenceScore']}"
-    if dic['data']['abuseConfidenceScore'] == 100:
+    if dic['data']['abuseConfidenceScore'] >= 80:
         malicious_ip.append(msg)
         if auto_block:
             block_ip(src,dst,True)
@@ -132,6 +132,7 @@ def valid_ip(ip):
 
 def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
     """  captures live packets on the network """
+    global malicious_ip
     clear_pcap()
     capture = LiveCapture(interface='wlo1', output_file=pcap_file)
     process_dic = get_processes()
@@ -178,9 +179,13 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
         skip = False
         for unique in uniques:
             if unique.startswith(packet_str):
-                score = unique.split(",")[-1]
-                if score == 100:
+                score = int(unique.split(",")[-1])
+                if score >= 80:
+                    msg =f"IP in uniques list: {dst_addr}, malicious factor: {score}"
+                    if msg not in malicious_ip:
+                        malicious_ip.append(msg)
                     block_ip(src_addr,dst_addr,True)
+                    scores[dst_addr] = score
                 skip = True
                 break
 
@@ -214,7 +219,7 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
 
         uniques.append(f"{packet_str},{score}")
 
-        if scores[dst_addr] == 100:
+        if scores[dst_addr] >= 80:
             print(f"Blocking IP {dst_addr}")
 
         print(separator)   
@@ -222,7 +227,7 @@ def sniffer(pcount,psize,use_ipdb,use_dns,auto_block):
 
     save_to_uniques(uniques)
     #lists blocked ips
-    blocked = [a for a in scores if scores[a] == 100]
+    blocked = [a for a in scores if scores[a] >= 80]
     if len(blocked) > 0:
         print("List of blocked IPs:")
         for ip in blocked:
@@ -240,8 +245,13 @@ def block_ip(src,ip,block):
     local = get_local_ip()
     if block and src != local:
         return
-    cmd(f"iptables -{'A' if block else 'D'} INPUT -s {ip} -j DROP")
-    #print(f"{'Blocking' if block else 'Unblocking'} traffic from {ip}!")
+    count = cmd("iptables --list").count(ip)
+    if block:
+        if count == 0:
+            cmd(f"iptables -A INPUT -s {ip} -j DROP")
+    else:
+        for i in range(count):
+            cmd(f"iptables -D INPUT -s {ip} -j DROP")
 
 def email_notif(uemail, pword):
     """ sets up email notification using gmail """ 
@@ -268,11 +278,11 @@ def check_email(email):
     return True if re.match(r".+@.+\.com",str(email)) else False
 
 def notif(send_email):
-    """ Changes notification if email and password submitted successfully """
+    """ runs nnotification bash script """
+    # changes notification if email and password submitted successfully
     msg = "Malicious IP Detected!"
     if send_email:
         msg += " Check email!"
-    """ runs notification bash script """
     sp.run(["sh","notify.sh","-u","critical","Alert!",msg])
     
 def toint(value):
@@ -328,8 +338,9 @@ def run_interface(args):
             ui.progress(75)
             # sends email for malicious ips if email credentials are valid
             if len(malicious_ip) > 0:
+                args.valid_email = validate_login(values['email'],values['passw'])
                 if args.valid_email:
-                    email_notif(values['email'],values['passw'])                    
+                    email_notif(values['email'],values['passw'])
                 notif(args.valid_email)
             ui.progress(100) 
 
@@ -374,22 +385,29 @@ def email_login(email,password):
     except smtplib.SMTPAuthenticationError as e:
         return False 
 
-def main():
-    args = get_args()
+def validate_login(email,password):
 
-    valid_email = check_email(args.email)
+    valid_email = check_email(email)
 
     # ask for a password if email valid
     if valid_email:
-        args.password = getpass.getpass("E-mail password: ")
-        valid_email = email_login(args.email,args.password)
+        valid_email = email_login(email,password)
         if not valid_email:
             print("Wrong email or password!")
+            return False
     else:
         print("Invalid email!")
-        args.password = ""
+        return False
 
-    args.valid_email = valid_email
+    return True
+
+def main():
+    args = get_args()
+
+    if not args.interface:
+        if not args.password or args.password == "":
+            args.password = getpass.getpass("E-mail password: ")
+        args.valid_email = validate_login(args.email,args.password)
 
     if args.interface:
         run_interface(args)
